@@ -7,6 +7,7 @@ from django.db.models.sql.where import SubqueryConstraint, WhereNode
 from django.utils.six import text_type
 
 from wagtail.wagtailsearch.index import class_is_indexed
+from wagtail.wagtailsearch.utils import separate_filters_from_query
 
 
 class FilterError(Exception):
@@ -221,13 +222,20 @@ class BaseSearch(object):
         if not class_is_indexed(model):
             return []
 
-        # Check that theres still a query string after the clean up
-        if query_string == "":
+        # Get pure query string and filters from query string
+        filters_from_qs, query_string = separate_filters_from_query(query_string)
+
+        # Check that there's still a query string and filters after the clean up
+        if query_string == "" and not filters_from_qs:
             return []
 
         # Apply filters to queryset
         if filters:
             queryset = queryset.filter(**filters)
+
+        # Apply filters from the query string to queryset
+        if filters_from_qs:
+            queryset = queryset.filter(**filters_from_qs)
 
         # Prefetch related
         if prefetch_related:
@@ -241,6 +249,7 @@ class BaseSearch(object):
                 raise ValueError("operator must be either 'or' or 'and'")
 
         # Search
+        query_string = query_string or None
         search_query = self.query_class(
             queryset, query_string, fields=fields, operator=operator, order_by_relevance=order_by_relevance
         )
