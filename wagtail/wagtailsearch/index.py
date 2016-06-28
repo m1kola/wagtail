@@ -1,8 +1,10 @@
 from __future__ import absolute_import, unicode_literals
 
 import logging
+import collections
 
 from django.apps import apps
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import models
 from django.db.models.fields import FieldDoesNotExist
 from django.db.models.fields.related import ForeignObjectRel, OneToOneRel, RelatedField
@@ -135,12 +137,35 @@ def remove_object(instance):
                 logger.exception("Exception raised while deleting %r from the '%s' search backend", indexed_instance, backend_name)
 
 
+def get_attribute(instance, attrs):
+    for attr in attrs:
+        if instance is None:
+            # Break out early if we get `None` at any point in a nested lookup.
+            return None
+        try:
+            if isinstance(instance, collections.Mapping):
+                instance = instance[attr]
+            else:
+                instance = getattr(instance, attr)
+        except ObjectDoesNotExist:
+            return None
+
+    return instance
+
+
 class BaseField(object):
     suffix = ''
 
     def __init__(self, field_name, **kwargs):
         self.field_name = field_name
         self.kwargs = kwargs
+
+        self.source = kwargs.get('source', self.field_name)
+        self.source_attrs = self.source.split('.')
+
+        self.alias = self.source_attrs[0]
+        if self.alias != self.field_name:
+            self.field_name, self.alias = self.alias, self.field_name
 
     def get_field(self, cls):
         return cls._meta.get_field(self.field_name)
@@ -153,7 +178,12 @@ class BaseField(object):
             return self.field_name
 
     def get_index_name(self, cls):
-        return self.get_attname(cls) + self.suffix
+        if self.alias == self.field_name:
+            index_name = self.get_attname(cls)
+        else:
+            index_name = self.alias
+
+        return index_name + self.suffix
 
     def get_type(self, cls):
         if 'type' in self.kwargs:
@@ -168,15 +198,21 @@ class BaseField(object):
     def get_value(self, obj):
         try:
             field = self.get_field(obj.__class__)
-            value = field.value_from_object(obj)
-            if hasattr(field, 'get_searchable_content'):
-                value = field.get_searchable_content(value)
-            return value
         except models.fields.FieldDoesNotExist:
             value = getattr(obj, self.field_name, None)
             if hasattr(value, '__call__'):
                 value = value()
             return value
+
+        if len(self.source_attrs) > 1:
+            # TODO: We need at least support of OneToMany relations
+            value = get_attribute(obj, self.source_attrs)
+        else:
+            value = field.value_from_object(obj)
+
+        if hasattr(field, 'get_searchable_content'):
+            value = field.get_searchable_content(value)
+        return value
 
     def __repr__(self):
         return '<%s: %s>' % (self.__class__.__name__, self.field_name)
